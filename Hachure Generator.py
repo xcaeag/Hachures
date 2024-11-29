@@ -4,6 +4,7 @@ import random
 
 from collections import defaultdict
 
+from qgis.PyQt.QtWidgets import QApplication
 from qgis.PyQt.QtCore import (
     QVariant
 )
@@ -12,9 +13,6 @@ from qgis.core import (
     QgsProject,
     QgsRasterLayer,
     QgsVectorLayer,
-    QgsField,
-    QgsMemoryProviderUtils,
-    QgsProcessingFeatureSourceDefinition,
     QgsPointXY,
     QgsGeometry,
     QgsFeature,
@@ -23,26 +21,29 @@ from qgis.core import (
 )
 from qgis import processing
 
+from tools import tools
+
 #============================USER PARAMETERS============================
 # These two params below are in DEM pixel units. So choosing 6 for the
 # max_hachure density means the script aims to make hachures 6 px apart
 # when the slope is at its minimum
 
-min_hachure_spacing = 2
-max_hachure_spacing = 6
+min_hachure_spacing = 15
+max_hachure_spacing = 100
 
-spacing_checks = 100 
+spacing_checks = 20
 # this parameter is how many times we check the hachure spacing
 # smaller number runs faster, but if lines are getting too close or too
 # far, it's not checking often enough
 
-min_slope = 15 #degrees
-max_slope = 40
+min_slope = 10 #degrees
+max_slope = 50
 
 
 DEM = iface.activeLayer() #The layer of interest must be selected
 
 #============================PREPATORY WORK=============================
+print("STEP 1 - Get slope/aspect/contours using built in tools")
 #---------STEP 1: Get slope/aspect/contours using built in tools--------
 stats = DEM.dataProvider().bandStatistics(1)
 elevation_range = stats.maximumValue - stats.minimumValue
@@ -66,6 +67,7 @@ line_contours = QgsVectorLayer(processing.run('gdal:contour',
 
 
 #--------STEP 2: Set up variables & prepare rasters for reading---------
+print("STEP 2: Set up variables & prepare rasters for reading")
 instance = QgsProject.instance()
 crs = instance.crs()
 
@@ -495,8 +497,8 @@ def even_splitter(contour):
     for line_geometry in contour.ring_list():
         
         length = line_geometry.length()
-        start_point = 0
-        end_point = spacing
+        #start_point = 0
+        #end_point = spacing
         
         i = spacing
         cut_locations = []
@@ -566,6 +568,7 @@ def cutpoint_splitter(line_geometry,CutPoint_list):
 
 #===============FUNCTIONS OVER; BEGIN CONTOUR PREPARATION===============
 #-STEP 1: Process the contours so that they are all in the needed format
+print("STEP 1: Process the contours so that they are all in the needed format")
 
 instance.addMapLayer(filled_contours,False)
 # Add filled_contours as hidden layer so I can work with it below
@@ -580,10 +583,12 @@ contour_polys.sort(key = lambda x: x.attributeMap()['ELEV_MIN'])
 # that are *higher* than that contour
 
 #-----STEP 2: Make a simple rectangle poly covering contours' extent----
+print("STEP 2: Make a simple rectangle poly covering contours' extent")
 extent = filled_contours.extent()
 boundary_polygon = QgsGeometry.fromRect(extent)
 
 #--STEP 3: Iterate through each contour poly and subtract it from our---
+print("STEP 3: Iterate through each contour poly and subtract it from our")
 #------rectangle, thus yielding rectangles with varying size holes------
 
 contour_geometries = [f.geometry() for f in contour_polys]
@@ -602,6 +607,7 @@ for geom in contour_geometries[:-1]:
     contour_differences.append(working_geometry)
     
 #------------------STEP 4: Dissolve the contour lines-------------------
+print("STEP 4: Dissolve the contour lines")
 contour_dict = defaultdict(list)
 
 for feature in line_contours.getFeatures():
@@ -630,6 +636,7 @@ for dissolved_line,poly_geometry in zip(dissolved_lines,contour_differences):
 instance.removeMapLayer(filled_contours) # no longer needed
                          
 #========MAIN LOOP: Iterate through Contours to generate hachures=======
+print("MAIN LOOP 1 : Iterate through Contours to generate hachures")
 
 current_hachures = None
 
@@ -639,27 +646,41 @@ current_hachures = None
 # Otherwise it moves to the next line and again tries to generate
 # a set of starting hachures.
 
-for line in contour_lines:
-     if current_hachures:
-         subsequent_contour(line)
-     else:
-         first_contour(line)
+fc = len(contour_lines)
+for i, line in enumerate(contour_lines):
+    tools.log("{}/{}".format(i, fc), delay=5)
+    QApplication.processEvents()
+    if current_hachures:
+        subsequent_contour(line)
+    else:
+        first_contour(line)
 
 # We sometimes pick up errant duplicates, so let's clean the final list
 current_hachures = list(set(current_hachures))
 
 # Add it to the map & also add length attributes so user can filter
-hachureLayer = QgsVectorLayer('linestring','Hachures','memory')
+hachureLayer = QgsVectorLayer('linestring', 'Hachures', 'memory')
 hachureLayer.setCrs(crs)
 
-field = QgsField('Length', QVariant.Double)
+
+"""field = QgsField('Length', QVariant.Double)
 hachureLayer.dataProvider().addAttributes([field])
 hachureLayer.updateFields()
 
-for feature in current_hachures:
+print("LOOP 2 : setAttributes")
+fc = len(contour_lines)
+for i, feature in enumerate(current_hachures):
+    tools.log("{}/{}".format(i, fc), delay=5)
+    QApplication.processEvents()
     feature.setAttributes([feature.geometry().length()])
+"""
 
 with edit(hachureLayer):
     hachureLayer.dataProvider().addFeatures(current_hachures)
-    
+
+r = processing.run("native:setzfromraster", {'INPUT':hachureLayer,'RASTER':DEM,'BAND':1,'NODATA':0,'SCALE':1,'OFFSET':0,'OUTPUT':'TEMPORARY_OUTPUT'})
+
+hachureLayer = r['OUTPUT']
+hachureLayer.setName("Hachures")
+
 instance.addMapLayer(hachureLayer)
