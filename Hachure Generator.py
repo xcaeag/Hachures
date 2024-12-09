@@ -25,25 +25,64 @@ from qgis import processing
 
 from tools import tools
 
+def fcnExpScale(val, domainMin, domainMax, rangeMin, rangeMax, exponent):
+    if val is None or (domainMin >= domainMax) or (exponent <= 0):
+        return None
+
+    if val >= domainMax:
+        return rangeMax
+    elif val <= domainMin:
+        return rangeMin
+
+    return (
+        (float(rangeMax) - float(rangeMin)) / math.pow(domainMax - domainMin, exponent)
+    ) * math.pow(float(val) - domainMin, exponent) + rangeMin
+
+
 #============================USER PARAMETERS============================
 # These two params below are in DEM pixel units. So choosing 6 for the
 # max_hachure density means the script aims to make hachures 6 px apart
 # when the slope is at its minimum
-
 min_hachure_spacing = 3
-max_hachure_spacing = 10
+max_hachure_spacing = 12
+
+min_spacing = None
+max_spacing = None
+# or in map units
+min_spacing = 20
+max_spacing = 100
+
+# faire glisser la répartition des pentes 
+# 1:identity   <1 : shift slope up  >1 : shift slope down
+slopeShiftExponent = 0.9
 
 # this parameter is how many times we check the hachure spacing
 # smaller number runs faster, but if lines are getting too close or too
 # far, it's not checking often enough
 # nombre de courbes (et non équidistance)
-spacing_checks = 200
+spacing_checks = 300
 
 min_slope = 20 #degrees
 max_slope = 55
 
-
 DEM = iface.activeLayer() #The layer of interest must be selected
+average_pixel_size = 0.5 * (DEM.rasterUnitsPerPixelX() +
+                  DEM.rasterUnitsPerPixelY())
+jump_distance = average_pixel_size * 3
+
+if min_spacing is None:
+    min_spacing = average_pixel_size * min_hachure_spacing
+    max_spacing = average_pixel_size * max_hachure_spacing
+
+spacing_range = max_spacing - min_spacing
+
+TITLE = f"Hachures-{min_spacing:0.0f}-{max_spacing:0.0f}-{min_slope:0.0f}-{max_slope:0.0f}-{slopeShiftExponent:0.1f}"
+
+min_slope = fcnExpScale(min_slope, 0, 90, 0, 90, slopeShiftExponent)
+max_slope = fcnExpScale(max_slope, 0, 90, 0, 90, slopeShiftExponent)
+slope_range = max_slope - min_slope
+
+
 
 #============================PREPATORY WORK=============================
 tools.log("STEP 1 - Get slope/aspect/contours using built in tools")
@@ -102,15 +141,6 @@ aspect_block = aspect_layer.dataProvider().block(1, extent, cols, rows)
 cell_width = extent.width() / cols
 cell_height = extent.height() / rows
 
-average_pixel_size = 0.5 * (slope_layer.rasterUnitsPerPixelX() +
-                  slope_layer.rasterUnitsPerPixelY())
-jump_distance = average_pixel_size * 3
-
-min_spacing = average_pixel_size * min_hachure_spacing
-max_spacing = average_pixel_size * max_hachure_spacing
-
-spacing_range = max_spacing - min_spacing
-slope_range = max_slope - min_slope
 
 
 #===========================CLASS DEFINITIONS===========================
@@ -178,12 +208,15 @@ class Segment:
         # Status stores info on how this segment should affect hachures
         # These values are used later in subsequent_contour
         
-        if self.slope < min_slope:
+        try:
+            if self.slope < min_slope:
+                self.status = 0
+            elif self.length < (ideal_spacing(self.slope) * 0.9):
+                self.status = 1
+            elif self.length > (ideal_spacing(self.slope) * 2.2):
+                self.status = 2
+        except:
             self.status = 0
-        elif self.length < (ideal_spacing(self.slope) * 0.9):
-            self.status = 1
-        elif self.length > (ideal_spacing(self.slope) * 2.2):
-            self.status = 2
         # The 0.9 and 2.2 above are thermostat controls. Instead of a
         # line being "too short" when it exactly falls below its ideal
         # spacing, we let it get a little tighter to avoid near-parallel
@@ -236,6 +269,10 @@ def sample_raster(location,type = 0):
         
 #-----------Given a slope, find the ideal spacing of hachures-----------
 def ideal_spacing(slope):
+    global slopeShiftExponent
+
+    slope = fcnExpScale(slope, 0, 90, 0, 90, slopeShiftExponent)
+
     if slope > max_slope:
         slope = max_slope
     elif slope < min_slope:
@@ -262,6 +299,8 @@ def dash_maker(contour_segment_list):
             continue
                 
         spacing = ideal_spacing(slope)
+        if spacing is None:
+            continue
         
         #We tune the spacing value based on the segment length to ensure
         #an integer number of dashes. This is rather like the automatic
@@ -727,6 +766,7 @@ r = processing.run("native:setzfromraster", {'INPUT':hachureLayer,'RASTER':DEM,'
 
 hachureLayer = r['OUTPUT']
 hachureLayer.setName("Hachures")
+hachureLayer.setTitle(TITLE)
 
 instance.addMapLayer(hachureLayer)
 
