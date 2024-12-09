@@ -1,13 +1,15 @@
 import math
 import statistics
 import random
+from datetime import datetime
 
 from collections import defaultdict
 
-from qgis.PyQt.QtWidgets import QApplication
-from qgis.PyQt.QtCore import (
-    QVariant
+from qgis.PyQt.QtWidgets import (
+    QApplication,
+    QMessageBox
 )
+
 from qgis.utils import iface
 from qgis.core import (
     QgsProject,
@@ -28,46 +30,64 @@ from tools import tools
 # max_hachure density means the script aims to make hachures 6 px apart
 # when the slope is at its minimum
 
-min_hachure_spacing = 15
-max_hachure_spacing = 100
+min_hachure_spacing = 3
+max_hachure_spacing = 10
 
-spacing_checks = 20
 # this parameter is how many times we check the hachure spacing
 # smaller number runs faster, but if lines are getting too close or too
 # far, it's not checking often enough
+# nombre de courbes (et non équidistance)
+spacing_checks = 200
 
-min_slope = 10 #degrees
-max_slope = 50
+min_slope = 20 #degrees
+max_slope = 55
 
 
 DEM = iface.activeLayer() #The layer of interest must be selected
 
 #============================PREPATORY WORK=============================
-print("STEP 1 - Get slope/aspect/contours using built in tools")
+tools.log("STEP 1 - Get slope/aspect/contours using built in tools")
 #---------STEP 1: Get slope/aspect/contours using built in tools--------
 stats = DEM.dataProvider().bandStatistics(1)
 elevation_range = stats.maximumValue - stats.minimumValue
 contour_interval = elevation_range / spacing_checks
 
 
+slope_layer = tools.getLayer("slope")
+aspect_layer = tools.getLayer("aspect")
+filled_contours = tools.getLayer("filled_contours")
+line_contours = tools.getLayer("line_contours")
+
 parameters = {
     'INPUT': DEM,
     'OUTPUT': 'TEMPORARY_OUTPUT'
 }
-slope_layer = QgsRasterLayer(
-    processing.run('qgis:slope', parameters)['OUTPUT'],'Slope')
-aspect_layer = QgsRasterLayer(
-    processing.run('qgis:aspect', parameters)['OUTPUT'],'Aspect')
+if slope_layer is None:
+    slope_layer = QgsRasterLayer(
+        processing.run('qgis:slope', parameters)['OUTPUT'],'Slope'
+    )
+    tools.addMapLayer(slope_layer, name="slope")
+
+if aspect_layer is None:
+    aspect_layer = QgsRasterLayer(
+        processing.run('qgis:aspect', parameters)['OUTPUT'],'Aspect'
+    )
+    tools.addMapLayer(aspect_layer, name="aspect")
 
 parameters['INTERVAL'] = contour_interval
-filled_contours = QgsVectorLayer(processing.run('gdal:contour_polygon',
-    parameters)['OUTPUT'], "Contour Layer", "ogr")
-line_contours = QgsVectorLayer(processing.run('gdal:contour',
-    parameters)['OUTPUT'], "Contour Layer", "ogr")
+if filled_contours is None:
+    filled_contours = QgsVectorLayer(processing.run('gdal:contour_polygon',
+        parameters)['OUTPUT'], "Contour Layer", "ogr")
+    tools.addMapLayer(filled_contours, name="filled_contours")
+
+if line_contours is None:
+    line_contours = QgsVectorLayer(processing.run('gdal:contour',
+        parameters)['OUTPUT'], "Contour Layer", "ogr")
+    tools.addMapLayer(line_contours, name="line_contours")
 
 
 #--------STEP 2: Set up variables & prepare rasters for reading---------
-print("STEP 2: Set up variables & prepare rasters for reading")
+tools.log("STEP 2: Set up variables & prepare rasters for reading")
 instance = QgsProject.instance()
 crs = instance.crs()
 
@@ -568,9 +588,9 @@ def cutpoint_splitter(line_geometry,CutPoint_list):
 
 #===============FUNCTIONS OVER; BEGIN CONTOUR PREPARATION===============
 #-STEP 1: Process the contours so that they are all in the needed format
-print("STEP 1: Process the contours so that they are all in the needed format")
+tools.log("STEP 1: Process the contours so that they are all in the needed format")
 
-instance.addMapLayer(filled_contours,False)
+# instance.addMapLayer(filled_contours,False)
 # Add filled_contours as hidden layer so I can work with it below
 
 # First we sort the contours from low elevation to high.
@@ -583,12 +603,12 @@ contour_polys.sort(key = lambda x: x.attributeMap()['ELEV_MIN'])
 # that are *higher* than that contour
 
 #-----STEP 2: Make a simple rectangle poly covering contours' extent----
-print("STEP 2: Make a simple rectangle poly covering contours' extent")
+tools.log("STEP 2: Make a simple rectangle poly covering contours' extent")
 extent = filled_contours.extent()
 boundary_polygon = QgsGeometry.fromRect(extent)
 
 #--STEP 3: Iterate through each contour poly and subtract it from our---
-print("STEP 3: Iterate through each contour poly and subtract it from our")
+tools.log("STEP 3: Iterate through each contour poly and subtract it from our")
 #------rectangle, thus yielding rectangles with varying size holes------
 
 contour_geometries = [f.geometry() for f in contour_polys]
@@ -607,7 +627,7 @@ for geom in contour_geometries[:-1]:
     contour_differences.append(working_geometry)
     
 #------------------STEP 4: Dissolve the contour lines-------------------
-print("STEP 4: Dissolve the contour lines")
+tools.log("STEP 4: Dissolve the contour lines")
 contour_dict = defaultdict(list)
 
 for feature in line_contours.getFeatures():
@@ -633,10 +653,10 @@ for dissolved_line,poly_geometry in zip(dissolved_lines,contour_differences):
 
 #each Contour carrys a record of its corresponding poly for use by haircut
 
-instance.removeMapLayer(filled_contours) # no longer needed
+# instance.removeMapLayer(filled_contours) # no longer needed
                          
 #========MAIN LOOP: Iterate through Contours to generate hachures=======
-print("MAIN LOOP 1 : Iterate through Contours to generate hachures")
+tools.log("MAIN LOOP 1 : Iterate through Contours to generate hachures")
 
 current_hachures = None
 
@@ -645,11 +665,36 @@ current_hachures = None
 # So each time, the if statement checks to see if we got anything back.
 # Otherwise it moves to the next line and again tries to generate
 # a set of starting hachures.
+t0 = datetime.now()
+okToContinue = False
+def progressLogAndContinueOrNot(i, tot, limit=300):
+    global t0, okToContinue
+
+    t1 = datetime.now()
+    dt = t1-t0
+    if dt.total_seconds() > 5 and not okToContinue:
+        reste = (tot-i) * (dt / (i+1))
+        if reste.total_seconds() > limit:
+            d = reste.total_seconds()
+            r = QMessageBox.question(
+                None, f"Traitement long ({d:.0f} s)", "Continuer ?", QMessageBox.Yes | QMessageBox.No
+            )
+            okToContinue = r == QMessageBox.Yes
+            if not okToContinue:
+                return False
+
+    d = (tot-i) * (dt / (i+1))
+    d = d.total_seconds()
+    tools.log("{}/{} reste {:.0f}s".format(i, tot, d), delay=5)
+
+    return True
+
 
 fc = len(contour_lines)
 for i, line in enumerate(contour_lines):
-    tools.log("{}/{}".format(i, fc), delay=5)
-    QApplication.processEvents()
+    if not progressLogAndContinueOrNot(i, fc, limit=300):
+        break
+
     if current_hachures:
         subsequent_contour(line)
     else:
@@ -667,7 +712,7 @@ hachureLayer.setCrs(crs)
 hachureLayer.dataProvider().addAttributes([field])
 hachureLayer.updateFields()
 
-print("LOOP 2 : setAttributes")
+tools.log("LOOP 2 : setAttributes")
 fc = len(contour_lines)
 for i, feature in enumerate(current_hachures):
     tools.log("{}/{}".format(i, fc), delay=5)
@@ -684,3 +729,5 @@ hachureLayer = r['OUTPUT']
 hachureLayer.setName("Hachures")
 
 instance.addMapLayer(hachureLayer)
+
+tools.log("FIN !!")
