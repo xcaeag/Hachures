@@ -41,14 +41,18 @@ def fcnExpScale(val, domainMin, domainMax, rangeMin, rangeMax, exponent):
 # These two params below are in DEM pixel units. So choosing 6 for the
 # max_hachure density means the script aims to make hachures 6 px apart
 # when the slope is at its minimum
-min_hachure_spacing = 3
-max_hachure_spacing = 12
 
-min_spacing = None
-max_spacing = None
-# or in map units
-min_spacing = 20
-max_spacing = 100
+# default : pixel units
+params = {"minhs":4, "maxhs":40, "mins":None, "maxs":None, "minslope":15, "maxslope":60, "checks":100}
+# map units
+# params = {"minhs":None, "maxhs":None, "mins":20, "maxs":100, "minslope":15, "maxslope":50, "checks":300}
+# miglos. Pixels units
+# params = {"minhs":3, "maxhs":20, "mins":None, "maxs":None, "minslope":15, "maxslope":60, "checks":250}
+
+min_hachure_spacing = params["minhs"]
+max_hachure_spacing = params["maxhs"]
+min_spacing = params["mins"]
+max_spacing = params["maxs"]
 
 # faire glisser la répartition des pentes
 # 1:identity   <1 : shift slope up  >1 : shift slope down
@@ -58,10 +62,10 @@ slopeShiftExponent = 0.9
 # smaller number runs faster, but if lines are getting too close or too
 # far, it's not checking often enough
 # nombre de courbes (et non équidistance)
-spacing_checks = 300
+spacing_checks = params["checks"]
 
-min_slope = 20  # degrees
-max_slope = 55
+min_slope = params["minslope"]  # degrees
+max_slope = params["maxslope"]
 
 DEM = iface.activeLayer()  # The layer of interest must be selected
 average_pixel_size = 0.5 * (DEM.rasterUnitsPerPixelX() + DEM.rasterUnitsPerPixelY())
@@ -187,52 +191,54 @@ class Contour:
                 all_segments += contour_segments
             else:
                 # If not, we should still return the unbroken ring
-                ring_feature = QgsFeature()
-                ring_feature.setGeometry(line_geometry)
-                all_segments.append(Segment(ring_feature))
+                #ring_feature = QgsFeature()
+                #ring_feature.setGeometry(line_geometry)
+                all_segments.append(Segment(line_geometry))
 
         return all_segments
 
 
 # ----Segments are contour pieces used to space or generate hachures-----
 class Segment:
-    def __init__(self, segFeature):
-        self.geometry = segFeature.geometry()
+    def __init__(self, geom):
+        self.geometry = QgsGeometry(geom)
         self.length = self.geometry.length()
-        self.slope = self.slope()
+        self.slope = None
         self.hachures = []
-
-        self.status = None
         # Status stores info on how this segment should affect hachures
         # These values are used later in subsequent_contour
+        self.status = None
 
-        try:
-            if self.slope < min_slope:
-                self.status = 0
-            elif self.length < (ideal_spacing(self.slope) * 0.9):
-                self.status = 1
-            elif self.length > (ideal_spacing(self.slope) * 2.2):
-                self.status = 2
-        except Exception:
-            self.status = 0
+    def getStatus(self):
         # The 0.9 and 2.2 above are thermostat controls. Instead of a
         # line being "too short" when it exactly falls below its ideal
         # spacing, we let it get a little tighter to avoid near-parallel
         # hachures cycling on/off rapidly.
+        if self.status is None:
+            try:
+                if self.getSlope() < min_slope:
+                    self.status = 0
+                elif self.length < (ideal_spacing(self.getSlope()) * 0.9):
+                    self.status = 1
+                elif self.length > (ideal_spacing(self.getSlope()) * 2.2):
+                    self.status = 2
+            except Exception:
+                self.status = 0
+
+        return self.status
 
     def ring_list(self):
         return [self.geometry]
 
-    def slope(self):
-        # Get the average slope under this segment
-        densified_line = self.geometry.densifyByDistance(average_pixel_size)
-        vertices = [(vertex.x(), vertex.y()) for vertex in densified_line.vertices()]
-
-        row_col_coords = [xy_to_rc(c) for c in vertices]
-
-        samples = [sample_raster(c, 0) for c in row_col_coords]
-
-        return statistics.fmean(samples)
+    def getSlope(self):
+        if self.slope is None:
+            # Get the average slope under this segment
+            densified_line = self.geometry.densifyByDistance(average_pixel_size)
+            row_col_coords = [xy_to_rc(vertex.x(), vertex.y()) for vertex in densified_line.vertices()]
+            samples = [sample_raster(c, 0) for c in row_col_coords]
+            self.slope = statistics.fmean(samples)
+        
+        return self.slope
 
 
 # --------------CutPoints mark where a contour is to be cut--------------
@@ -245,9 +251,7 @@ class CutPoint:
 
 # =========================FUNCTION DEFINITIONS-=========================
 # --------Converts x/y coords to row/col for sampling the rasters--------
-def xy_to_rc(location):
-    x, y = location
-
+def xy_to_rc(x, y):
     col = round((x - extent.xMinimum()) / cell_width - 0.5)
     row = round((extent.yMaximum() - y) / cell_height - 0.5)
 
@@ -296,7 +300,7 @@ def dash_maker(contour_segment_list):
     output_segments = []
 
     for contour_segment in contour_segment_list:
-        slope = contour_segment.slope
+        slope = contour_segment.getSlope()
         if slope < min_slope:
             continue
 
@@ -332,11 +336,11 @@ def dash_maker(contour_segment_list):
         geometry = contour_segment.geometry
 
         while True:
-            substring_feature = QgsFeature()
+            #substring_feature = QgsFeature()
             line_substring = geometry.constGet().curveSubstring(start_point, end_point)
-            substring_feature.setGeometry(line_substring)
+            #substring_feature.setGeometry(line_substring)
 
-            output_segments.append(Segment(substring_feature))
+            output_segments.append(Segment(line_substring))
 
             start_point += dash_gap_length
             end_point += dash_gap_length
@@ -389,12 +393,11 @@ def subsequent_contour(contour):
     clip_all = []
 
     for segment in segment_list:
-
-        if segment.status == 1:
+        if segment.getStatus() == 1:
             too_short.append(segment)
-        elif segment.status == 2:
+        elif segment.getStatus() == 2:
             too_long.append(segment)
-        elif segment.status == 0:
+        elif segment.getStatus() == 0:
             clip_all.append(segment)
 
     # too_short: this segment spans 2 hachures that are too close
@@ -466,11 +469,8 @@ def hachure_generator(segment_list):
     start_points = []
 
     for segment in segment_list:
-
         midpoint = segment.length / 2
-
         midpoint = segment.geometry.interpolate(midpoint)
-
         start_points.append(midpoint.asPoint())
 
     # Next loop through the start_points & make hachures
@@ -481,7 +481,7 @@ def hachure_generator(segment_list):
         line_coords = [coords]
 
         x, y = coords
-        rc = xy_to_rc(coords)
+        rc = xy_to_rc(x, y)
         value = sample_raster(rc, 1)  # 1= Get the aspect value
 
         if value == 0:  # if we go out of bounds, stop this line
@@ -500,7 +500,7 @@ def hachure_generator(segment_list):
             # to stop the hachure when they should
 
             x, y = line_coords[-1]
-            rc = xy_to_rc(line_coords[-1])
+            rc = xy_to_rc(x, y)
             value = sample_raster(rc, 1)  # get the aspect value
             slope = sample_raster(rc, 0)  # the slope, too
             if value == 0:  # we're out of bounds of the raster
@@ -588,9 +588,9 @@ def master_splitter(line_geometry, cut_locations):
     for cut_spot in cut_locations:
 
         line_substring = line_geometry.constGet().curveSubstring(start_point, cut_spot)
-        new_feature = QgsFeature()
-        new_feature.setGeometry(line_substring)
-        segment_list.append(Segment(new_feature))
+        #new_feature = QgsFeature()
+        #new_feature.setGeometry(line_substring)
+        segment_list.append(Segment(line_substring))
         start_point = cut_spot
 
     return segment_list
@@ -609,9 +609,9 @@ def cutpoint_splitter(line_geometry, CutPoint_list):
     line_substring = line_geometry.constGet().curveSubstring(
         0, CutPoint_list[0].cut_location
     )
-    new_feature = QgsFeature()
-    new_feature.setGeometry(line_substring)
-    segment_list.append(Segment(new_feature))
+    #new_feature = QgsFeature()
+    #new_feature.setGeometry(line_substring)
+    segment_list.append(Segment(line_substring))
 
     # Then do all the middle cuts & append hachure data to the Segments
     for i in range(0, len(CutPoint_list)):
@@ -626,9 +626,9 @@ def cutpoint_splitter(line_geometry, CutPoint_list):
         line_substring = line_geometry.constGet().curveSubstring(
             start_location, end_location
         )
-        new_feature = QgsFeature()
-        new_feature.setGeometry(line_substring)
-        new_segment = Segment(new_feature)
+        #new_feature = QgsFeature()
+        #new_feature.setGeometry(line_substring)
+        new_segment = Segment(line_substring)
         segment_list.append(new_segment)
         if i != len(CutPoint_list) - 1:
             new_segment.hachures = [start_point.hachure, end_point.hachure]
@@ -800,3 +800,4 @@ hachureLayer.setTitle(TITLE)
 instance.addMapLayer(hachureLayer)
 
 tools.log("FIN !!")
+
