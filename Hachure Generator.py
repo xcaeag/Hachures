@@ -5,7 +5,7 @@ from datetime import datetime
 
 from collections import defaultdict
 
-from qgis.PyQt.QtWidgets import QMessageBox
+from qgis.PyQt.QtWidgets import QApplication, QMessageBox
 
 from qgis.utils import iface
 from qgis.core import (
