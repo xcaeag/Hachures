@@ -709,6 +709,8 @@ okToContinue = False
 def progressLogAndContinueOrNot(i, tot, limit=300):
     global t0, okToContinue
 
+    QApplication.processEvents()
+
     t1 = datetime.now()
     dt = t1-t0
     if dt.total_seconds() > 5 and not okToContinue:
