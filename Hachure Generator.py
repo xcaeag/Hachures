@@ -227,8 +227,8 @@ class Segment:
 
         return self.status
 
-    #def ring_list(self):
-    #    return [self.geometry]
+    def ring_list(self):
+        return [self.geometry]
 
     def getSlope(self):
         if self.slope is None:
@@ -422,7 +422,7 @@ def subsequent_contour(contour):
     to_clip = list(set(to_clip))
 
     # Remove those to be clipped from the current hachures
-    current_hachures = [f for f in current_hachures if f not in to_clip]
+    current_hachures = [g for g in current_hachures if g not in to_clip]
 
     # Clip them, then put them back
     clipped_hachures = haircut(contour, to_clip)
@@ -539,11 +539,11 @@ def make_lines(coord_list):
     return polyline
 
 # -----Splits a line  into even segments based on max_spacing-----
-def even_splitter(contour):
+def even_splitter(contourOrSeg):
     spacing = max_spacing * 3
     output_segments = []
 
-    for line_geometry in contour.ring_list():
+    for line_geometry in contourOrSeg.ring_list():
         length = line_geometry.length()
         # start_point = 0
         # end_point = spacing
@@ -567,8 +567,9 @@ def master_splitter(line_geometry, cut_locations):
 
     segment_list = []
 
+    constline = line_geometry.constGet()
     for cut_spot in cut_locations:
-        line_substring = line_geometry.constGet().curveSubstring(start_point, cut_spot)
+        line_substring = constline.curveSubstring(start_point, cut_spot)
         segment_list.append(Segment(line_substring))
         start_point = cut_spot
 
@@ -585,7 +586,8 @@ def cutpoint_splitter(line_geometry, CutPoint_list):
     segment_list = []
 
     # Add first segment
-    line_substring = line_geometry.constGet().curveSubstring(
+    constline = line_geometry.constGet()
+    line_substring = constline.curveSubstring(
         0, CutPoint_list[0].cut_location
     )
     segment_list.append(Segment(line_substring))
@@ -601,7 +603,7 @@ def cutpoint_splitter(line_geometry, CutPoint_list):
             end_point = CutPoint_list[i + 1]
             end_location = end_point.cut_location
 
-        line_substring = line_geometry.constGet().curveSubstring(
+        line_substring = constline.curveSubstring(
             start_location, end_location
         )
         new_segment = Segment(line_substring)
