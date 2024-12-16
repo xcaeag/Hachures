@@ -448,8 +448,7 @@ def haircut(contour, hachure_list):
     contour_poly_geometry = contour.polygon
 
     clipped = []
-    for hachure in hachure_list:
-        hachure_geo = hachure.geometry()
+    for hachure_geo in hachure_list:
         clipped.append(hachure_geo.difference(contour_poly_geometry))
 
     return clipped
